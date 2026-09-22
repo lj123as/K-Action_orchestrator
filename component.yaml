@@ -5,6 +5,8 @@ dir:
   - action/K-Action_orchestrator
 version: 1.0.0
 provides:
+  - action.reconcile
   - action.operate     # Action Operation 统一编排：create/update/execute/validate（Type Contract 分派）
 requires:
+  - action.type_registry
   - knowledge.query    # 消费 ActionCandidate / Action Specification v1

@@ -1,0 +1,6 @@
+id: k-action-orchestrator
+type: software
+profile: cli
+targets:
+  - local
+  - local-cli

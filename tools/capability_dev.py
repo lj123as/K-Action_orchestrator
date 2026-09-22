@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""K-Action_orchestrator generation dispatch (v1).
-GenerationRequest v1 -> local skeleton -> component.yaml -> registry proposed -> handoff.
+"""K-Action_orchestrator component generation dispatch (v1).
+GenerationRequest v1 -> local skeleton -> component.yaml -> handoff.
 Gate: review_status=approved unless --allow-unreviewed.
 """
 import argparse, json, os, re, subprocess, sys
@@ -11,7 +11,6 @@ VAULT = Path(os.environ.get("KA_VAULT_ROOT", ".")).resolve()
 REPORTS = VAULT / ".knowledge/reports"
 EVENTS = VAULT / ".knowledge/events"
 INIT = VAULT / "action/K-Action_orchestrator/skills/create-action-system/scripts/init_system.py"
-REGTOOL = VAULT / "action/action-system/tools/action_registry.py"
 N = chr(10)
 
 def now_iso():
@@ -65,9 +64,9 @@ def main():
         return 2
     desc = str(fm.get("description", "")).strip() or ("Action subsystem: " + name)
     print(json.dumps({"dry_run": args.dry_run, "request_id": rid, "subsystem": name,
-                      "target": "action/" + name, "gate": review, "github": False, "steps": 5}))
+                      "target": "action/" + name, "gate": review, "github": False, "steps": 3}))
     if args.dry_run:
-        print(json.dumps({"status": "dry_run_ok", "would": ["init no-github", "component.yaml", "registry proposed", "handoff"]}))
+        print(json.dumps({"status": "dry_run_ok", "would": ["init no-github", "component.yaml", "handoff"]}))
         return 0
     if not INIT.exists():
         print("init_system.py not found: " + str(INIT), file=sys.stderr)
@@ -82,18 +81,16 @@ def main():
                         "id: " + name, "dir:", "  - cognition/" + name, "  - action/" + name,
                         "version: 0.1.0", "provides: []", "requires: []"])
     cyaml.write_text(cycontent + N, encoding="utf-8")
-    reg = subprocess.run([sys.executable, str(REGTOOL), "register", name, "--status", "proposed", "--health", "ok"],
-                        capture_output=True, text=True, timeout=60)
     handoff = REPORTS / ("generation-handoff-" + rid + ".md")
     REPORTS.mkdir(parents=True, exist_ok=True)
     lines = ["# Generation Handoff " + rid, "",
              "> subsystem: action/" + name, "> candidate: " + fm.get("candidate_id", ""),
              "> generated_at: " + now_iso(), "> mode: local skeleton (no-github v1)", "",
              "## Next steps", "", "- 补 component.yaml provides/requires", "- 建立 cognition/" + name + " SSOT",
-             "- 写接口与首个 skill/tool", "- 生命周期状态由 action-registry 维护", ""]
+             "- 写接口与首个 skill/tool", "- 组件目录不会自动成为 Atomic Action", ""]
     handoff.write_text(N.join(lines), encoding="utf-8")
     event({"request_id": rid, "subsystem": name, "target": "action/" + name,
-          "handoff": str(handoff.relative_to(VAULT)), "registry": reg.returncode == 0})
+          "handoff": str(handoff.relative_to(VAULT))})
     print(json.dumps({"status": "handoff", "request_id": rid, "subsystem": name,
                       "target": "action/" + name, "handoff": str(handoff.relative_to(VAULT))}))
     return 0

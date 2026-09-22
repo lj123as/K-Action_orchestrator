@@ -68,7 +68,6 @@ KA 系统的模板分为两个层级，各司其职，协同工作：
 | [[action/knowledge-network/templates/TPL_Object|TPL_Object]] | `O·` | 对象/实体定义 | spec, interfaces |
 | [[action/knowledge-network/templates/TPL_State|TPL_State]] | `S·` | 事态/场景快照 | window, observations |
 | [[action/knowledge-network/templates/TPL_Cognition|TPL_Cognition]] | `C·` | 认知/结论/假设 | claim, evidence, uncertainty |
-| [[action/action-system/templates/TPL_Action|TPL_Action]] | `A·` | 行动/实验/任务 | steps, success, stop_conditions |
 | [[action/knowledge-network/templates/TPL_Atomic_Generic|TPL_Atomic_Generic]] | 通用 | 快速创建原子笔记 | 基础结构 |
 
 ### 可视化辅助模板
@@ -229,7 +228,6 @@ graph TB
     subgraph "Level 1: Atomic Schema"
         T1 --> A1[TPL_Object]
         T1 --> A3[TPL_Cognition]
-        T2 --> A4[TPL_Action (action-system)]
         T3 --> A2[TPL_State]
         T3 --> A3
         T4 --> A4

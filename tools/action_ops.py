@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """K-Action Orchestrator Runtime API: unified Action Operation entry.
 
-Action Request (target + action_type + operation) -> resolve Type Capability
-via manifest Action Type Catalog -> call provider capability ->
+Action Request (target + action_type + operation) -> resolve Factory via KA-System Registry -> call provider capability ->
 record/update .knowledge/state/action-instances.json + events.
 
 Operations: create (new instance), update (existing instance fields/state),
@@ -19,7 +18,7 @@ STATE = VAULT / ".knowledge/state"
 INSTANCES = STATE / "action-instances.json"
 EVENTS = VAULT / ".knowledge/events"
 N = chr(10)
-OPS = ("create", "update", "execute", "validate", "register", "catalog")
+OPS = ("create", "update", "execute", "validate", "register", "catalog", "reconcile")
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -29,13 +28,21 @@ def parse_fm(text):
     if text.startswith("---" + N):
         end = text.find(N + "---", 4)
         if end != -1:
+            last_key = None
             for line in text[4:end].splitlines():
                 s = line.strip()
-                if not s or s.startswith("#") or s.startswith("- "):
+                if not s or s.startswith("#"):
+                    continue
+                if s.startswith("- ") and last_key:
+                    fm.setdefault(last_key, []).append(s[2:].strip())
                     continue
                 if ":" in s:
-                    k, v = s.split(":", 1)
-                    fm[k.strip()] = v.strip().strip(chr(34))
+                    if s.endswith(":"):
+                        last_key = s[:-1].strip()
+                        fm.setdefault(last_key, [])
+                    else:
+                        k, v = s.split(":", 1)
+                        fm[k.strip()] = v.strip().strip(chr(34))
     return fm
 
 def load_action_types():
@@ -81,7 +88,65 @@ def load_provider(provider, mod, fn_name):
     except Exception as e:
         return None, "provider load failed: " + str(e)[:200]
 
-def call_provider(provider, fn_name, *args):
+def _registry_tool_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "KA-system/tools/action_type_registry.py"
+
+
+def _factory_install_root(factory):
+    """Install root declared by the FactoryRegistration deployment environment."""
+    raw = str((factory or {}).get("install_root") or "").strip()
+    return Path(raw).expanduser().resolve() if raw else None
+
+
+def resolve_entrypoint_via_registry(entrypoint, install_root=None):
+    """Resolve a Provider entrypoint with the KA-System Registry predicate.
+
+    The install root comes from the FactoryRegistration's deployment environment, so
+    the Registry and the Orchestrator validate with identical inputs. There is no
+    second vault-only predicate left in this file.
+    """
+    tool = _registry_tool_path()
+    if not tool.exists():
+        return None, "registry tool not found: " + str(tool)
+    try:
+        spec_l = importlib.util.spec_from_file_location("action_type_registry_entrypoint", tool)
+        module = importlib.util.module_from_spec(spec_l)
+        spec_l.loader.exec_module(module)
+        return module.resolve_entrypoint(VAULT, entrypoint, install_root)
+    except Exception as exc:
+        return None, "registry entrypoint resolution failed: " + str(exc)[:200]
+
+
+def load_provider_entrypoint(provider, entrypoint, fn_name, install_root=None):
+    # Entrypoint resolution is owned by the KA-System Registry: one predicate, so the
+    # Registry and the Orchestrator can never disagree about what is loadable.
+    resolved, error = resolve_entrypoint_via_registry(entrypoint, install_root)
+    if error:
+        return None, error
+    path = Path(resolved)
+    if not path.is_absolute():
+        path = (VAULT / resolved).resolve()
+    if not path.is_file():
+        return None, "provider entrypoint not found: " + str(entrypoint)
+    try:
+        spec_l = importlib.util.spec_from_file_location("p_" + provider, path)
+        m = importlib.util.module_from_spec(spec_l)
+        spec_l.loader.exec_module(m)
+        return m, getattr(m, fn_name, None)
+    except Exception as e:
+        return None, "provider load failed: " + str(e)[:200]
+
+def call_provider(provider, fn_name, *args, entrypoint=None, install_root=None):
+    if entrypoint:
+        _, fn = load_provider_entrypoint(provider, entrypoint, fn_name, install_root)
+        if isinstance(fn, str):
+            return None, fn
+        if not fn:
+            return None, fn_name + " not found in provider " + provider
+        try:
+            return fn(*args), None
+        except Exception as e:
+            return None, fn_name + " failed: " + str(e)[:200]
     for mod in ("action_provider.py", "design_model.py", "design_model_provider.py"):
         m, fn = load_provider(provider, mod, fn_name)
         if isinstance(fn, str):
@@ -92,6 +157,80 @@ def call_provider(provider, fn_name, *args):
             except Exception as e:
                 return None, fn_name + " failed: " + str(e)[:200]
     return None, fn_name + " not found in provider " + provider
+
+def resolve_factory(action_type):
+    path = Path(__file__).resolve().parents[2] / "KA-system/tools/action_type_registry.py"
+    try:
+        spec_l = importlib.util.spec_from_file_location("action_type_registry", path)
+        module = importlib.util.module_from_spec(spec_l)
+        spec_l.loader.exec_module(module)
+        result = module.resolve(action_type, VAULT)
+        if result.get("exit") == 0:
+            result["_registry_module"] = module
+        return result
+    except Exception as e:
+        return {"exit": 2, "error": "registry resolution failed: " + str(e)[:200]}
+
+def op_reconcile(fm, apply=False):
+    action_type = str(fm.get("desired_action_type") or "").strip()
+    if not action_type:
+        return {"exit": 2, "error": "missing action_type: ActionIntent requires desired_action_type"}
+    resolved = resolve_factory(action_type)
+    if resolved.get("exit") != 0:
+        return resolved
+    factory = resolved["factory"]
+    registry = resolved["_registry_module"]
+    cognition_ref = str(fm.get("cognition_ref") or "").strip()
+    cognition_path = (VAULT / cognition_ref).resolve()
+    if not cognition_path.is_relative_to(VAULT):
+        return {"exit": 2, "error": "cognition_ref must stay inside the vault"}
+    cognition = {"ref": cognition_ref}
+    if cognition_ref and cognition_path.is_file():
+        cognition["content"] = cognition_path.read_text(encoding="utf-8", errors="ignore")
+    current_state = registry.find_action(
+        fm.get("current_action_ref"),
+        cognition_ref,
+        action_type,
+        VAULT,
+    )
+    intent = {
+        "cognition_ref": cognition_ref,
+        "desired_action_type": action_type,
+        "current_action_ref": str(fm.get("current_action_ref") or ""),
+        "reason": str(fm.get("reason") or ""),
+        "revision": str(fm.get("revision") or ""),
+    }
+    for key in ("requirements", "design_blocks", "acceptance", "template_src", "profiles"):
+        if fm.get(key):
+            intent[key] = fm[key]
+    context = {
+        key: fm[key]
+        for key in ("action_id", "workspace_ref", "provenance", "operation")
+        if fm.get(key)
+    }
+    request = {
+        "intent": intent,
+        "cognition": cognition,
+        "current_state": current_state,
+        "constraints": {},
+        "context": context,
+    }
+    provider_id = factory["provider_id"]
+    planned, error = call_provider(provider_id, "plan", request, VAULT,
+                                    entrypoint=factory["entrypoint"],
+                                    install_root=_factory_install_root(factory))
+    if error or not planned or planned.get("exit") != 0:
+        return {"exit": 2, "error": error or (planned or {}).get("error", "factory plan failed")}
+    plan = planned.get("plan")
+    output = {"exit": 0, "factory": factory, "plan": plan}
+    if apply:
+        applied, error = call_provider(provider_id, "apply", plan, request, VAULT,
+                                       entrypoint=factory["entrypoint"],
+                                       install_root=_factory_install_root(factory))
+        if error or not applied or applied.get("exit") != 0:
+            return {"exit": 2, "error": error or (applied or {}).get("error", "factory apply failed")}
+        output["result"] = applied.get("result")
+    return output
 
 def event(name, payload):
     EVENTS.mkdir(parents=True, exist_ok=True)
@@ -127,10 +266,26 @@ def find_instance(data, fm):
 
 def op_create(fm, types):
     atype = str(fm.get("action_type", "")).strip()
-    provider = (types[atype]["creators"] or [""])[0]
-    cap_instance, cap_err = call_provider(provider, "create_instance", fm, VAULT)
+    resolved = resolve_factory(atype)
+    if resolved.get("exit") != 0:
+        return {"exit": 2, "error": resolved.get("error", "FactoryUnavailable")}
+    factory = resolved["factory"]
+    provider = factory["provider_id"]
+    cap_instance, cap_err = call_provider(
+        provider,
+        "create_instance",
+        fm,
+        VAULT,
+        entrypoint=factory.get("entrypoint"),
+        install_root=_factory_install_root(factory),
+    )
+    if cap_err:
+        return {"exit": 2, "error": cap_err}
+    if not isinstance(cap_instance, dict) or cap_instance.get("exit") != 0:
+        return {"exit": 2, "error": (cap_instance or {}).get("error", "factory create_instance failed")}
     cap_out = cap_instance.get("instance") if cap_instance and cap_instance.get("exit") == 0 else None
-    cap_err = cap_err or (cap_instance.get("error") if cap_instance and cap_instance.get("exit") != 0 else None)
+    if not isinstance(cap_out, dict):
+        return {"exit": 2, "error": "factory create_instance returned no instance"}
     instance = {
         "instance_id": "act-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
         "spec_id": fm.get("spec_id", ""),
@@ -153,18 +308,37 @@ def op_create(fm, types):
     event("action.instance.created", {"instance_id": instance["instance_id"], "spec_id": instance["spec_id"], "action_type": atype, "provider": provider})
     return {"status": "created", "instance": instance}
 
+def resolve_instance_factory(instance):
+    """Resolve an existing instance through the active Action Type Registry."""
+    action_type = str(instance.get("action_type") or "").strip()
+    if not action_type:
+        return None, "instance missing action_type"
+    resolved = resolve_factory(action_type)
+    if resolved.get("exit") != 0:
+        return None, resolved.get("error", "FactoryUnavailable")
+    return resolved["factory"], None
+
 def op_update(fm, types):
     data = load_instances()
     inst = find_instance(data, fm)
     if not inst:
         return {"exit": 2, "error": "instance not found (need instance_id or subject+action_type)"}
-    cap_out, cap_err = call_provider(inst["provider"], "update_instance", inst, fm, VAULT)
-    if cap_out and cap_out.get("exit") == 0:
-        inst.update(cap_out.get("instance") or {})
+    factory, factory_error = resolve_instance_factory(inst)
+    if factory_error:
+        return {"exit": 2, "error": factory_error}
+    inst["provider"] = factory["provider_id"]
+    cap_out, cap_err = call_provider(
+        factory["provider_id"], "update_instance", inst, fm, VAULT,
+        entrypoint=factory.get("entrypoint"),
+        install_root=_factory_install_root(factory),
+    )
+    if cap_err:
+        return {"exit": 2, "error": cap_err}
+    if not isinstance(cap_out, dict) or cap_out.get("exit") != 0:
+        return {"exit": 2, "error": (cap_out or {}).get("error", "factory update_instance failed")}
+    inst.update(cap_out.get("instance") or {})
     inst["state"] = "updated"
     inst["updated_at"] = now_iso()
-    if cap_err:
-        inst["capability_error"] = cap_err
     save_instances(data)
     event("action.instance.updated", {"instance_id": inst["instance_id"], "action_type": inst["action_type"]})
     return {"status": "updated", "instance": inst}
@@ -174,10 +348,18 @@ def op_execute(fm, types):
     inst = find_instance(data, fm)
     if not inst:
         return {"exit": 2, "error": "instance not found (need instance_id or subject+action_type)"}
+    factory, factory_error = resolve_instance_factory(inst)
+    if factory_error:
+        return {"exit": 2, "error": factory_error}
+    inst["provider"] = factory["provider_id"]
     inst["state"] = "running"
     inst["last_run"] = now_iso()
     save_instances(data)
-    cap_out, cap_err = call_provider(inst["provider"], "execute", inst, fm, VAULT)
+    cap_out, cap_err = call_provider(
+        factory["provider_id"], "execute", inst, fm, VAULT,
+        entrypoint=factory.get("entrypoint"),
+        install_root=_factory_install_root(factory),
+    )
     final = "done"
     if cap_out and cap_out.get("exit") == 0:
         final = cap_out.get("state", "done")
@@ -210,7 +392,17 @@ def op_validate(fm, types):
     else:
         if not inst.get("provider"):
             issues.append("missing provider")
-        cap_out, cap_err = call_provider(inst["provider"], "validate", inst, fm, VAULT) if inst else (None, None)
+        factory, factory_error = resolve_instance_factory(inst)
+        if factory_error:
+            issues.append(factory_error)
+            cap_out, cap_err = None, None
+        else:
+            inst["provider"] = factory["provider_id"]
+            cap_out, cap_err = call_provider(
+                factory["provider_id"], "validate", inst, fm, VAULT,
+                entrypoint=factory.get("entrypoint"),
+        install_root=_factory_install_root(factory),
+            )
         if cap_out and cap_out.get("exit") == 0:
             pass
         else:
@@ -239,7 +431,7 @@ def component_declared_types(path):
 def registry_entry(type_id, provider, ops):
     return ["  - id: " + type_id,
             "    description: Registered by K-Action_orchestrator register (Type Contract reconcile)",
-            "    owner: action-system",
+            "    owner: ka-system",
             "    creators: [" + provider + "]",
             "    operations: [" + ", ".join(ops) + "]"]
 
@@ -320,6 +512,8 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--apply", action="store_true", help="register: write registry reconcile changes into manifest")
     args = ap.parse_args()
+    if args.dry_run and args.apply:
+        ap.error("--dry-run and --apply are mutually exclusive")
     if args.command == "catalog":
         types = load_action_types()
         print(json.dumps({
@@ -332,6 +526,15 @@ def main():
     text = sys.stdin.read() if args.request == "-" else Path(args.request).read_text(encoding="utf-8", errors="ignore")
     fm = parse_fm(text)
     op = args.command
+    if op == "reconcile":
+        result = op_reconcile(fm, apply=args.apply)
+        if result.get("exit") == 2:
+            print(result.get("error", "failed"), file=sys.stderr)
+            return 2
+        if not args.apply:
+            result["dry_run"] = True
+        print(json.dumps({k: v for k, v in result.items() if k != "exit"}, ensure_ascii=False, indent=1))
+        return 0
     atype = str(fm.get("action_type", "")).strip()
     review = str(fm.get("review_status", "")).strip()
     status = str(fm.get("status", "")).strip()

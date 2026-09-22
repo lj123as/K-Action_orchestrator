@@ -15,13 +15,33 @@ def make_vault(root: Path, provider="fake_ss", prov_impl=None):
     mf.write_text(chr(10).join([
         "version: \"1\"",
         "action_types:",
-        "  - id: software-system",
+        "  - id: software",
         "    creators: [" + provider + "]",
         "    operations: [create, update, execute, validate, register]",
-        "  - id: agentic-software",
-        "    creators: [agentic-software]",
-        "    operations: [create, update, execute, validate, register]",
     ]), encoding="utf-8")
+    (root / ".knowledge" / "state" / "software-realizations.json").write_text(
+        json.dumps({
+            "version": 1,
+            "actions": {
+                provider: {
+                    "installations": [{
+                        "id": provider + "@test",
+                        "host_id": "test-host",
+                        "status": "active",
+                        "components": [{
+                            "id": provider,
+                            "status": "active",
+                            "entrypoint": "action/" + provider + "/design_model.py",
+                            "provides": ["action.factory_provider"],
+                            "action_types": ["software"],
+                        }],
+                    }],
+                    "runtime_instances": [],
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
     return root
 
 def make_spec(root: Path, name="spec.md", op="create"):
@@ -29,7 +49,7 @@ def make_spec(root: Path, name="spec.md", op="create"):
     body = [
         "---",
         "spec_id: spec-001",
-        "action_type: software-system",
+        "action_type: software",
         "operation: " + op,
         "subject: stock-analysis-system",
     ]
@@ -44,8 +64,10 @@ PROVIDER_IMPL = chr(10).join([
     '    return {"exit": 0, "instance": {"instance_type": "FakeSoftwareInstance/v1", "subject": spec.get("subject", ""), "state": "created"}}',
     "def execute(instance, spec=None, vault=None):",
     '    return {"exit": 0, "executed": True, "state": "done", "maintenance": {"added": 1, "dry_run": True}}',
+    "def update_instance(instance, spec, vault=None):",
+    '    return {"exit": 0, "instance": {"registry_route": "update"}}',
     "def validate(instance, spec=None, vault=None):",
-    '    return {"exit": 0, "valid": True}',
+    '    return {"exit": 0, "valid": True, "registry_route": "validate"}',
     "def schema():",
     '    return {"exit": 0, "objects": []}',
 ])
@@ -63,7 +85,7 @@ def test_create_operation_creates_instance():
         assert p.returncode == 0, p.stderr
         data = json.loads((vault / ".knowledge/state/action-instances.json").read_text(encoding="utf-8"))
         inst = data["instances"][0]
-        assert inst["action_type"] == "software-system"
+        assert inst["action_type"] == "software"
         assert inst["state"] == "created"
         assert inst["provider"] == "fake_ss"
 
@@ -105,6 +127,70 @@ def test_validate_operation_checks_instance_and_provider():
         assert p.returncode == 0, p.stderr
         assert "valid" in p.stdout.lower() or "ok" in p.stdout.lower()
 
+def test_existing_instance_operations_resolve_active_registry_provider():
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        make_vault(vault, provider="fake_ss", prov_impl=PROVIDER_IMPL)
+        state = vault / ".knowledge/state/action-instances.json"
+        state.write_text(json.dumps({"version": 1, "instances": [{
+            "instance_id": "act-1",
+            "action_type": "software",
+            "subject": "registry-route",
+            "provider": "stale-provider",
+            "state": "created",
+        }]}), encoding="utf-8")
+
+        validate = make_spec(vault, name="validate.md", op="validate")
+        validate.write_text(validate.read_text(encoding="utf-8").replace("act-0001", "act-1"), encoding="utf-8")
+        result = run(vault, "validate", str(validate))
+        assert result.returncode == 0, result.stderr
+
+        update = make_spec(vault, name="update.md", op="update")
+        update.write_text(update.read_text(encoding="utf-8").replace("act-0001", "act-1"), encoding="utf-8")
+        result = run(vault, "update", str(update))
+        assert result.returncode == 0, result.stderr
+        instance = json.loads(state.read_text(encoding="utf-8"))["instances"][0]
+        assert instance["provider"] == "fake_ss"
+        assert instance["registry_route"] == "update"
+
+        execute = make_spec(vault, name="execute.md", op="execute")
+        execute.write_text(execute.read_text(encoding="utf-8").replace("act-0001", "act-1"), encoding="utf-8")
+        result = run(vault, "execute", str(execute))
+        assert result.returncode == 0, result.stderr
+        assert json.loads(state.read_text(encoding="utf-8"))["instances"][0]["provider"] == "fake_ss"
+
+def test_create_and_update_fail_without_persisting_success_state():
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        failing = chr(10).join([
+            "def create_instance(spec, vault=None):",
+            '    return {"exit": 2, "error": "create failed"}',
+            "def update_instance(instance, spec, vault=None):",
+            '    return {"exit": 2, "error": "update failed"}',
+        ])
+        make_vault(vault, provider="fake_ss", prov_impl=failing)
+        spec = make_spec(vault)
+        result = run(vault, "create", str(spec))
+        assert result.returncode == 2
+        assert "create failed" in result.stderr
+        state = vault / ".knowledge/state/action-instances.json"
+        assert not state.exists()
+
+        state.write_text(json.dumps({"version": 1, "instances": [{
+            "instance_id": "act-1",
+            "action_type": "software",
+            "subject": "broken-update",
+            "provider": "fake_ss",
+            "state": "created",
+        }]}), encoding="utf-8")
+        before = state.read_text(encoding="utf-8")
+        update = make_spec(vault, name="update.md", op="update")
+        update.write_text(update.read_text(encoding="utf-8").replace("act-0001", "act-1"), encoding="utf-8")
+        result = run(vault, "update", str(update))
+        assert result.returncode == 2
+        assert "update failed" in result.stderr
+        assert state.read_text(encoding="utf-8") == before
+
 def test_operation_rejects_unknown_operation():
     with tempfile.TemporaryDirectory() as td:
         vault = Path(td)
@@ -145,7 +231,7 @@ def test_catalog_lists_registered_action_types():
         assert p.returncode == 0, p.stderr
         data = json.loads(p.stdout)
         ids = [t["id"] for t in data["action_types"]]
-        assert ids == ["agentic-software", "software-system"]
-        ss = [t for t in data["action_types"] if t["id"] == "software-system"][0]
+        assert ids == ["software"]
+        ss = data["action_types"][0]
         assert "fake_ss" in ss["creators"]
         assert "register" in ss["operations"]
