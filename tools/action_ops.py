@@ -29,20 +29,37 @@ def parse_fm(text):
         end = text.find(N + "---", 4)
         if end != -1:
             last_key = None
+            block_key = None
             for line in text[4:end].splitlines():
-                s = line.strip()
-                if not s or s.startswith("#"):
+                if not line.strip() or line.strip().startswith("#"):
                     continue
+                indented = line[:1] in (" ", chr(9))
+                s = line.strip()
                 if s.startswith("- ") and last_key:
                     fm.setdefault(last_key, []).append(s[2:].strip())
                     continue
-                if ":" in s:
-                    if s.endswith(":"):
-                        last_key = s[:-1].strip()
-                        fm.setdefault(last_key, [])
-                    else:
-                        k, v = s.split(":", 1)
-                        fm[k.strip()] = v.strip().strip(chr(34))
+                if ":" not in s:
+                    continue
+                k, v = s.split(":", 1)
+                k, v = k.strip(), v.strip().strip(chr(34))
+                if indented and block_key:
+                    block = fm.get(block_key)
+                    if not isinstance(block, dict):
+                        block = fm[block_key] = {}
+                    block[k] = v
+                    last_key = None
+                elif not v:
+                    last_key = block_key = k
+                    fm.setdefault(k, [])
+                elif v == "{}":
+                    last_key = block_key = None
+                    fm[k] = {}
+                elif v == "[]":
+                    last_key = block_key = None
+                    fm[k] = []
+                else:
+                    last_key = block_key = None
+                    fm[k] = v
     return fm
 
 def load_action_types():
@@ -200,14 +217,16 @@ def op_reconcile(fm, apply=False):
         "reason": str(fm.get("reason") or ""),
         "revision": str(fm.get("revision") or ""),
     }
-    for key in ("requirements", "design_blocks", "acceptance", "template_src", "profiles"):
-        if fm.get(key):
-            intent[key] = fm[key]
-    context = {
-        key: fm[key]
-        for key in ("action_id", "workspace_ref", "provenance", "operation")
-        if fm.get(key)
-    }
+    # The Orchestrator does not enumerate type-specific keys: whatever the ActionIntent
+    # declares, and the Factory is not told about through the context block, is passed
+    # through verbatim. Enumerating them here is how a harness intent lost model_binding.
+    context_keys = ("action_id", "workspace_ref", "provenance", "operation")
+    reserved = set(intent) | set(context_keys) | {"review_status", "status", "approval"}
+    for key, value in fm.items():
+        if key in reserved or value in (None, "", [], {}):
+            continue
+        intent[key] = value
+    context = {key: fm[key] for key in context_keys if fm.get(key)}
     request = {
         "intent": intent,
         "cognition": cognition,

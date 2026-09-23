@@ -526,3 +526,80 @@ def test_reconcile_uses_registration_install_root(tmp_path):
     payload = json.loads(result.stdout)
     assert payload["factory"]["install_root"].endswith("ka-install-root")
     assert payload["plan"]["operations"] == [{"op": "noop"}]
+
+
+def seed_capturing_factory(vault):
+    """A fake Factory that records the request the Orchestrator handed it."""
+    provider = vault / "action" / "fake-factory"
+    provider.mkdir(parents=True)
+    (provider / "component.yaml").write_text(
+        "id: fake-factory\nprovides:\n  - action.factory_provider\n"
+        "action_types:\n  - fake-type\nrequires: []\n",
+        encoding="utf-8",
+    )
+    entrypoint = vault / "installed/providers/capturing_factory.py"
+    entrypoint.parent.mkdir(parents=True)
+    entrypoint.write_text(
+        "import json\n"
+        "from pathlib import Path\n"
+        "\n"
+        "\n"
+        "def plan(request, vault=None):\n"
+        "    Path(vault, 'captured-request.json').write_text(\n"
+        "        json.dumps(request, ensure_ascii=False), encoding='utf-8')\n"
+        "    return {'exit': 0, 'plan': {'operations': [{'op': 'noop'}], 'effects': [],\n"
+        "            'risks': [], 'requires_review': False, 'expected_state': {}}}\n",
+        encoding="utf-8",
+    )
+    state = vault / ".knowledge/state"
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "software-realizations.json").write_text(
+        json.dumps({
+            "version": 1,
+            "actions": {
+                "fake-factory": {
+                    "installations": [{
+                        "id": "fake-factory@test",
+                        "host_id": "test-host",
+                        "status": "active",
+                        "components": [{
+                            "id": "fake-factory",
+                            "status": "active",
+                            "entrypoint": "installed/providers/capturing_factory.py",
+                            "provides": ["action.factory_provider"],
+                            "action_types": ["fake-type"],
+                        }],
+                    }],
+                    "runtime_instances": [],
+                }
+            },
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_reconcile_passes_type_specific_intent_to_the_factory(tmp_path):
+    """The Orchestrator must not enumerate type-specific keys, and must not flatten
+    nested frontmatter: a harness intent carries model_binding / runtime_provider, and
+    only the Factory may interpret them."""
+    seed_capturing_factory(tmp_path)
+    intent = ("---" + chr(10) +
+              "cognition_ref: cognition/fake/README.md" + chr(10) +
+              "desired_action_type: fake-type" + chr(10) +
+              "reason: nested bindings" + chr(10) +
+              "revision: r1" + chr(10) +
+              "runtime_provider: pi" + chr(10) +
+              "execution_semantics: agent-loop" + chr(10) +
+              "model_binding:" + chr(10) +
+              "  provider: pi" + chr(10) +
+              "  model: default" + chr(10) +
+              "---" + chr(10))
+
+    result = run_cmd(tmp_path, [ACTION_OPS, "reconcile", "-", "--dry-run"], intent)
+
+    assert result.returncode == 0, result.stderr
+    captured = json.loads((tmp_path / "captured-request.json").read_text(encoding="utf-8"))
+    assert captured["intent"]["model_binding"] == {"provider": "pi", "model": "default"}
+    assert captured["intent"]["runtime_provider"] == "pi"
+    assert captured["intent"]["execution_semantics"] == "agent-loop"
+    assert "provider" not in captured["intent"]
