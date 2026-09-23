@@ -25,7 +25,25 @@ Action Request（action_type + operation）
 - 运行时信封（dispatch / schedule / health / retry / audit）由 KA-System 提供；操作执行统一走本入口，不绕过。
 
 
+### Manual ActionIntent intake
+
+Until the Knowledge Network candidate outlet is defined, ActionIntents are written by hand and kept under
+`action/K-Action_orchestrator/requests/`:
+
+```bash
+python action/K-Action_orchestrator/tools/action_ops.py --dry-run reconcile \
+  action/K-Action_orchestrator/requests/example-software-reconcile.md
+```
+
+Front-matter keys: `desired_action_type` (required), `cognition_ref`, `current_action_ref`, `reason`,
+`revision`, plus optional `requirements` / `design_blocks` / `acceptance` / `template_src` / `profiles`.
+
+`reconcile` is the only operation with this shape. `create` / `update` / `validate` / `register` take a
+request carrying `action_type` instead, and `create` additionally requires `review_status: approved`.
+The two shapes are not interchangeable: an intent says what should exist, a request says what to do now.
+
 ## `action-candidate-intake`
+
 
 - Owner: K-Action_orchestrator.
 - Producer: knowledge-network candidate-generation, KA-system dispatch, or human operator.
