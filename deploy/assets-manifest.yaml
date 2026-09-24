@@ -1,0 +1,11 @@
+# Component owns assets; Bundle owns composition; Host owns installation.
+id: action-orchestrator
+version: "1.0.0"
+
+assets:
+  - id: "skill-create-action-system"
+    type: "skill"
+    path: "skills/create-action-system/"
+    description: "Scaffold an action system (init_system) for a new workspace"
+    target: "codex"
+    optional: "True"
