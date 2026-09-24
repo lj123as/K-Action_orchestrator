@@ -7,5 +7,5 @@ assets:
     type: "skill"
     path: "skills/create-action-system/"
     description: "Scaffold an action system (init_system) for a new workspace"
-    target: "codex"
+    target: "codex,pi"
     optional: "True"
