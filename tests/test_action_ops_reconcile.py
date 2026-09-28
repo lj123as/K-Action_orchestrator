@@ -77,7 +77,7 @@ def apply(plan, request, vault=None):
             "version": 1,
             "actions": {
                 "fake-factory": {
-                    "installations": [{
+                    "installation_generations": [{
                         "id": "fake-factory@test",
                         "host_id": "test-host",
                         "status": "active",
@@ -264,7 +264,7 @@ def test_ka_system_seed_reconciles_through_software_factory(tmp_path):
             "version": 1,
             "actions": {
                 "software-factory": {
-                    "installations": [{
+                    "installation_generations": [{
                         "id": "software-factory@test",
                         "host_id": "test-host",
                         "status": "active",
@@ -340,7 +340,7 @@ def test_software_factory_reconcile_apply_materializes_workspace(tmp_path):
             "version": 1,
             "actions": {
                 "software-factory": {
-                    "installations": [{
+                    "installation_generations": [{
                         "id": "software-factory@test",
                         "host_id": "test-host",
                         "status": "active",
@@ -406,7 +406,7 @@ def test_software_factory_bootstraps_ka_and_kn_with_agentic_profile(tmp_path):
             "version": 1,
             "actions": {
                 "software-factory": {
-                    "installations": [{
+                    "installation_generations": [{
                         "id": "software-factory@test",
                         "host_id": "test-host",
                         "status": "active",
@@ -501,7 +501,7 @@ def test_reconcile_uses_registration_install_root(tmp_path):
             "id": "ka-vault-server", "type": "production", "install_root": str(install_root)}},
         "actions": {"fake-factory": {
             "source_workspaces": [], "distributions": [], "service_bindings": [],
-            "installations": [{
+            "installation_generations": [{
                 "id": "fake-factory@ka-vault-server", "host_id": "ka-vault-server",
                 "status": "active", "link_kind": "artifact", "revision": "1.0.0",
                 "distribution_id": "fake-factory@1.0.0",
@@ -558,7 +558,7 @@ def seed_capturing_factory(vault):
             "version": 1,
             "actions": {
                 "fake-factory": {
-                    "installations": [{
+                    "installation_generations": [{
                         "id": "fake-factory@test",
                         "host_id": "test-host",
                         "status": "active",

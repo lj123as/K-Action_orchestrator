@@ -9,7 +9,7 @@ execute (state machine running/done), validate (instance + provider check).
 create is just one operation; maintenance is NOT a separate architecture.
 Stdlib only.
 """
-import argparse, importlib.util, json, os, sys
+import argparse, importlib.util, json, os, sys, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -274,14 +274,30 @@ def save_instances(data):
     INSTANCES.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
 
 def find_instance(data, fm):
+    """The instance an explicit identity names. Identity is the only way to name an instance.
+
+    A subject is not an identity: two Actions of one type can share a subject, so matching on
+    subject + action_type acts on whichever happens to sit first in the array -- and an unknown
+    instance_id used to fall through to that match instead of reporting itself unknown.
+    """
     iid = str(fm.get("instance_id", "")).strip()
-    subj = str(fm.get("subject", "")).strip()
+    if not iid:
+        return None
     for inst in data.get("instances", []):
-        if iid and inst.get("instance_id") == iid:
-            return inst
-        if subj and inst.get("subject") == subj and str(inst.get("action_type")) == str(fm.get("action_type", "")).strip():
+        if inst.get("instance_id") == iid:
             return inst
     return None
+
+
+def require_instance(data, fm):
+    """(instance, error) for an operation that must name one instance explicitly."""
+    iid = str(fm.get("instance_id", "")).strip()
+    if not iid:
+        return None, "instance_id is required"
+    inst = find_instance(data, fm)
+    if not inst:
+        return None, "no such instance: " + iid
+    return inst, ""
 
 def op_create(fm, types):
     atype = str(fm.get("action_type", "")).strip()
@@ -306,7 +322,9 @@ def op_create(fm, types):
     if not isinstance(cap_out, dict):
         return {"exit": 2, "error": "factory create_instance returned no instance"}
     instance = {
-        "instance_id": "act-" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+        # Identity is opaque and must be unique. A second-granularity timestamp is neither: two
+        # creates inside one second collided. The time belongs in `created_at`, not in the id.
+        "instance_id": "act-" + str(uuid.uuid4()),
         "spec_id": fm.get("spec_id", ""),
         "action_type": atype,
         "intent": fm.get("intent", ""),
@@ -339,9 +357,9 @@ def resolve_instance_factory(instance):
 
 def op_update(fm, types):
     data = load_instances()
-    inst = find_instance(data, fm)
-    if not inst:
-        return {"exit": 2, "error": "instance not found (need instance_id or subject+action_type)"}
+    inst, error = require_instance(data, fm)
+    if error:
+        return {"exit": 2, "error": error}
     factory, factory_error = resolve_instance_factory(inst)
     if factory_error:
         return {"exit": 2, "error": factory_error}
@@ -364,9 +382,9 @@ def op_update(fm, types):
 
 def op_execute(fm, types):
     data = load_instances()
-    inst = find_instance(data, fm)
-    if not inst:
-        return {"exit": 2, "error": "instance not found (need instance_id or subject+action_type)"}
+    inst, error = require_instance(data, fm)
+    if error:
+        return {"exit": 2, "error": error}
     factory, factory_error = resolve_instance_factory(inst)
     if factory_error:
         return {"exit": 2, "error": factory_error}
@@ -404,10 +422,10 @@ def op_execute(fm, types):
 
 def op_validate(fm, types):
     data = load_instances()
-    inst = find_instance(data, fm)
+    inst, error = require_instance(data, fm)
     issues = []
-    if not inst:
-        issues.append("instance not found")
+    if error:
+        issues.append(error)
     else:
         if not inst.get("provider"):
             issues.append("missing provider")

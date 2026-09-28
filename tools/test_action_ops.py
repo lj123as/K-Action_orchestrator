@@ -24,7 +24,7 @@ def make_vault(root: Path, provider="fake_ss", prov_impl=None):
             "version": 1,
             "actions": {
                 provider: {
-                    "installations": [{
+                    "installation_generations": [{
                         "id": provider + "@test",
                         "host_id": "test-host",
                         "status": "active",
@@ -235,3 +235,51 @@ def test_catalog_lists_registered_action_types():
         ss = data["action_types"][0]
         assert "fake_ss" in ss["creators"]
         assert "register" in ss["operations"]
+
+
+def test_instance_identity_is_the_only_way_to_name_an_instance():
+    """Two Actions of one type can share a subject, so a subject is not an identity."""
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        make_vault(vault, provider="fake_ss", prov_impl=PROVIDER_IMPL)
+        state = vault / ".knowledge/state/action-instances.json"
+        state.write_text(json.dumps({"version": 1, "instances": [
+            {"instance_id": "act-A", "action_type": "software", "subject": "shared",
+             "provider": "fake_ss", "state": "created"},
+            {"instance_id": "act-B", "action_type": "software", "subject": "shared",
+             "provider": "fake_ss", "state": "created"},
+        ]}), encoding="utf-8")
+
+        subject_only = make_spec(vault, name="subject-only.md", op="update")
+        subject_only.write_text(
+            subject_only.read_text(encoding="utf-8").replace("instance_id: act-0001", ""),
+            encoding="utf-8")
+        r = run(vault, "update", str(subject_only))
+        assert r.returncode == 2, r.stdout
+        assert "instance_id is required" in r.stderr
+
+        # An unknown id must not resolve to an instance that merely shares the subject.
+        unknown = make_spec(vault, name="unknown.md", op="update")
+        unknown.write_text(
+            unknown.read_text(encoding="utf-8").replace("act-0001", "act-TYPO"),
+            encoding="utf-8")
+        r = run(vault, "update", str(unknown))
+        assert r.returncode == 2, r.stdout
+        assert "no such instance: act-TYPO" in r.stderr
+
+        states = [i["state"] for i in json.loads(state.read_text(encoding="utf-8"))["instances"]]
+        assert states == ["created", "created"]
+
+
+def test_instance_ids_do_not_encode_the_time():
+    """Identity is opaque; the created_at field carries the time, so one second cannot collide."""
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        make_vault(vault, provider="fake_ss", prov_impl=PROVIDER_IMPL)
+        for name in ("one.md", "two.md"):
+            assert run(vault, "create", str(make_spec(vault, name=name))).returncode == 0
+        state = json.loads((vault / ".knowledge/state/action-instances.json").read_text(encoding="utf-8"))
+        ids = [i["instance_id"] for i in state["instances"]]
+        assert len(ids) == 2 and len(set(ids)) == 2
+        # The old id was act-YYYYMMDDHHMMSS, which two creates inside one second shared.
+        assert not any(i.split("-", 1)[1].isdigit() for i in ids)

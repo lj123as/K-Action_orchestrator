@@ -40,7 +40,7 @@ TOOLS = [
                                     "instance_id": {"type": "string"},
                                     "spec_id": {"type": "string"},
                                     "intent": {"type": "string"}},
-                     "required": ["action_type"]}},
+                     "required": ["instance_id"]}},
 ]
 
 

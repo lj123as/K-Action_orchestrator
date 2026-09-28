@@ -8,10 +8,10 @@ assets:
     path: "skills/create-action-system/"
     description: "Scaffold an action system (init_system) for a new workspace"
     target: "codex,pi"
-    optional: "True"
+    optional: true
   - id: "mcp-server"
     type: "mcp"
     path: "mcp/server.py"
     description: "Action Operation MCP entry (create/update/execute/validate/register)"
     target: "codex"
-    optional: "False"
+    optional: false

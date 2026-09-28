@@ -23,6 +23,7 @@ Action Request（action_type + operation）
 - 门控：create 需 `review_status: approved`（ActionSpecification v1）。
 - 请求盒通道：knowledge-network poller 的 `create-action` 请求路由到本入口（operation 默认 create，可用 frontmatter `operation` 覆盖）。
 - 运行时信封（dispatch / schedule / health / retry / audit）由 KA-System 提供；操作执行统一走本入口，不绕过。
+- identity：`create` 生成实例（id 是不编码时间的 uuid，时间在 `created_at`）；`update` / `execute` / `validate` 必须带 `instance_id` 并精确命中。**subject 不是 identity**——同一类型的两个 Action 可以共享 subject，未知 id 直接报错，不回退到 subject 匹配。
 
 
 ### Manual ActionIntent intake
