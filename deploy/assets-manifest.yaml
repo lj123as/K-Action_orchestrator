@@ -15,3 +15,10 @@ assets:
     description: "Action Operation MCP entry (create/update/execute/validate/register)"
     target: "codex"
     optional: false
+    launch:
+      transport: stdio
+      command: python
+      args: ["{asset}"]
+      env:
+        KA_VAULT_ROOT: "{vault}"
+      required_host_env: []
