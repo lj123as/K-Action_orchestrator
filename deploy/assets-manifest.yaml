@@ -1,6 +1,5 @@
 # Component owns assets; Bundle owns composition; Host owns installation.
 id: action-orchestrator
-version: "1.0.0"
 
 assets:
   - id: "skill-create-action-system"
