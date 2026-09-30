@@ -57,6 +57,13 @@ def parse_fm(text):
                 elif v == "[]":
                     last_key = block_key = None
                     fm[k] = []
+                elif v.startswith("[") and v.endswith("]"):
+                    # An inline list is a list. Keeping it as the raw string made every consumer
+                    # iterate it character by character: "profiles: [agentic]" wrote a descriptor
+                    # whose profiles were "[" "a" "g" ...
+                    last_key = block_key = None
+                    fm[k] = [item.strip().strip(chr(34))
+                             for item in v[1:-1].split(",") if item.strip()]
                 else:
                     last_key = block_key = None
                     fm[k] = v

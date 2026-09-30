@@ -603,3 +603,22 @@ def test_reconcile_passes_type_specific_intent_to_the_factory(tmp_path):
     assert captured["intent"]["runtime_provider"] == "pi"
     assert captured["intent"]["execution_semantics"] == "agent-loop"
     assert "provider" not in captured["intent"]
+
+
+def test_reconcile_reads_an_inline_list_as_a_list_not_a_string(tmp_path):
+    """`profiles: [agentic]` arrived as the raw string, so the Factory iterated it character by
+    character and wrote a descriptor whose profiles were "[" "a" "g" ..."""
+    seed_capturing_factory(tmp_path)
+    intent = ("---" + chr(10) +
+              "cognition_ref: cognition/fake/README.md" + chr(10) +
+              "desired_action_type: fake-type" + chr(10) +
+              "reason: inline list" + chr(10) +
+              "revision: r1" + chr(10) +
+              "profiles: [agentic, base]" + chr(10) +
+              "---" + chr(10))
+
+    result = run_cmd(tmp_path, [ACTION_OPS, "reconcile", "-", "--dry-run"], intent)
+
+    assert result.returncode == 0, result.stderr
+    captured = json.loads((tmp_path / "captured-request.json").read_text(encoding="utf-8"))
+    assert captured["intent"]["profiles"] == ["agentic", "base"]

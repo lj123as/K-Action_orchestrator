@@ -18,7 +18,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# Action Operation: what action_ops owns; these write when called (they have no preview step).
 OPERATIONS = ("create", "update", "execute", "validate", "register")
+# Registry operation: the descriptor face. Its own set, with preview by default.
+REGISTRY_OPERATIONS = ("catalog", "reconcile")
 NAME = "action-orchestrator"
 VERSION = "0.1.0"
 
@@ -41,6 +44,20 @@ TOOLS = [
                                     "spec_id": {"type": "string"},
                                     "intent": {"type": "string"}},
                      "required": ["instance_id"]}},
+    {"name": "action_registry_catalog",
+     "description": "read-only view of the Action Types declared in .knowledge/manifest.yaml "
+                    "(the Registry's declaration source)",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "action_reconcile",
+     "description": "create or update an Atomic Action descriptor from an ActionIntent: the "
+                    "Registry resolves the Factory, the Factory plans and applies. PREVIEW BY "
+                    "DEFAULT - state is written only when apply is true. The Action Operations "
+                    "(create/update/execute/validate/register) are not preview-gated and must "
+                    "not be described as if they were",
+     "inputSchema": {"type": "object",
+                     "properties": {"request": {"type": "string"},
+                                    "apply": {"type": "boolean"}},
+                     "required": ["request"]}},
 ]
 
 
@@ -68,12 +85,39 @@ def update_intent(args):
     return chr(10).join(lines) + chr(10)
 
 
+def run_registry(operation, request="", apply=False):
+    """A Registry operation, at the preview semantics that operation declares.
+
+    `reconcile` is dry-run unless `apply` is true. `apply` is accepted only as a JSON boolean:
+    a string "false" is not a declaration to write, and treating it as one is how a preview
+    turns into a write.
+    """
+    if operation not in REGISTRY_OPERATIONS:
+        return {"exit": 2, "error": "unknown registry operation: " + str(operation)}
+    argv = [sys.executable, str(ROOT / "tools/action_ops.py"), operation]
+    if apply is True:
+        argv.append("--apply")
+    if operation != "catalog":
+        argv.append("-")
+    proc = subprocess.run(argv, input=str(request or ""), capture_output=True, text=True,
+                          encoding="utf-8", timeout=300)
+    try:
+        payload = json.loads((proc.stdout or "").strip())
+    except ValueError:
+        payload = {"stdout": (proc.stdout or "").strip(), "stderr": (proc.stderr or "").strip()}
+    return {"exit": proc.returncode, **payload}
+
+
 def dispatch(name, args):
     args = args or {}
     if name == "action_request":
         return run_operation(args.get("operation", ""), args.get("request", ""))
     if name == "action_update_component":
         return run_operation("update", update_intent(args))
+    if name == "action_registry_catalog":
+        return run_registry("catalog")
+    if name == "action_reconcile":
+        return run_registry("reconcile", args.get("request", ""), args.get("apply"))
     raise ValueError("unknown tool: " + str(name))
 
 
