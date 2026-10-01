@@ -13,6 +13,7 @@ context_binding:
   ref: cognition/ai-workspace/README.md
 requires_capabilities:
   - knowledge.query
+  - knowledge.retrieve
   - knowledge.mutate
   - action.operate
   - artifact.read
