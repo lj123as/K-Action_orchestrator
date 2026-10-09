@@ -216,7 +216,7 @@ subject: registry-routed
 ---
 """
 
-    result = run_cmd(tmp_path, [ACTION_OPS, "create", "-"], intent)
+    result = run_cmd(tmp_path, [ACTION_OPS, "create", "-", "--apply"], intent)
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)

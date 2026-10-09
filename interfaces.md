@@ -21,14 +21,14 @@ Action Request（action_type + operation）
 ```
 
 - 门控：create 需 `review_status: approved`（ActionSpecification v1）。
-- 请求盒通道：knowledge-network poller 的 `create-action` 请求路由到本入口（operation 默认 create，可用 frontmatter `operation` 覆盖）。
+- 请求盒通道：knowledge-network poller 的 `create-action` 请求在 reviewed ActionCandidate handoff 中路由到 `reconcile`；它携带 `desired_action_type` 与 `cognition_ref`，由客户端显式 `--apply` 进入 Factory realization。其他直接 Action Operation 请求继续按各自 operation 契约处理。
 - 运行时信封（dispatch / schedule / health / retry / audit）由 KA-System 提供；操作执行统一走本入口，不绕过。
 - identity：`create` 生成实例（id 是不编码时间的 uuid，时间在 `created_at`）；`update` / `execute` / `validate` 必须带 `instance_id` 并精确命中。**subject 不是 identity**——同一类型的两个 Action 可以共享 subject，未知 id 直接报错，不回退到 subject 匹配。
 
 
 ### Manual ActionIntent intake
 
-Until the Knowledge Network candidate outlet is defined, ActionIntents are written by hand and kept under
+Knowledge Network emits a reviewed ActionCandidate handoff as an ActionIntent; before that outlet is available, ActionIntents are written by hand and kept under
 `action/K-Action_orchestrator/requests/`:
 
 ```bash
@@ -123,7 +123,7 @@ Generated output remains a component scaffold until explicit Atomic Action regis
 - 通道：开发环境直接调用（CLI / SKILL）；生产请求盒 `type: create-action` 已收敛到 `tools/action_ops.py` 统一入口，不再路由到本工具。门控 `review_status: approved`；`--dry-run` 预演；人工显式授权用 `--allow-unreviewed`。
 - GenerationRequest v1 frontmatter 示例：id / candidate_id / subsystem / description / review_status: approved。
 
-- `tools/action_ops.py`（统一 Action Operation 编排：create / update / execute / validate / register；按 action_type + operation 解析 Type Capability（manifest operations 白名单）并调用 provider；实例状态落 `.knowledge/state/action-instances.json`；`register` 对账 Type Contract → manifest（默认 dry-run，`--apply` 落盘）；`--dry-run` 预演）。
+- `tools/action_ops.py`（统一 Action Operation 编排：create / update / execute / validate / register；按 action_type + operation 解析 Type Capability（manifest operations 白名单）并调用 provider；实例状态落 `.knowledge/state/action-instances.json`；mutating operation 默认只生成 plan，只有显式 `--apply` 才调用 Factory 并落盘；`validate` / `catalog` 只读；`register` 同样默认 dry-run）。
 
 ## Factory routing and Type Contract registration
 

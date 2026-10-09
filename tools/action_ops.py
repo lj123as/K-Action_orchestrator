@@ -455,6 +455,36 @@ def op_validate(fm, types):
         return {"exit": 2, "valid": False, "issues": issues}
     return {"exit": 0, "valid": True, "instance": inst}
 
+
+def op_plan(operation, fm, types):
+    """Validate a mutating request and describe its effects without calling a Factory."""
+    atype = str(fm.get("action_type", "")).strip()
+    if atype not in types:
+        return {"exit": 2, "error": "unknown action_type: " + atype}
+    if operation == "create":
+        if str(fm.get("review_status", "")).strip() != "approved" and \
+                str(fm.get("status", "")).strip() != "approved":
+            return {"exit": 2, "error": "gate: create spec must be approved"}
+        resolved = resolve_factory(atype)
+        if resolved.get("exit") != 0:
+            return {"exit": 2, "error": resolved.get("error", "FactoryUnavailable")}
+        return {"exit": 0, "status": "planned", "plan": {
+            "operation": operation, "action_type": atype,
+            "provider": resolved["factory"]["provider_id"],
+            "effects": [".knowledge/state/action-instances.json",
+                        ".knowledge/events"]}}
+    data = load_instances()
+    instance, error = require_instance(data, fm)
+    if error:
+        return {"exit": 2, "error": error}
+    factory, factory_error = resolve_instance_factory(instance)
+    if factory_error:
+        return {"exit": 2, "error": factory_error}
+    return {"exit": 0, "status": "planned", "plan": {
+        "operation": operation, "instance_id": instance["instance_id"],
+        "action_type": instance["action_type"], "provider": factory["provider_id"],
+        "effects": [".knowledge/state/action-instances.json", ".knowledge/events"]}}
+
 def component_declared_types(path):
     """Parse action_types block of a component.yaml (Type Contract 声明源)."""
     types, in_at = [], False
@@ -532,9 +562,10 @@ def op_register(fm, types, apply=False):
                         changed_lines[i] = indent + "creators: [" + ", ".join(cur + [prov]) + "]"
                     in_block = False
         mf.write_text(mf_nl.join(changed_lines) + mf_nl, encoding="utf-8")
-    event("action.type.registered", {"action_type": atype, "provider": provider,
-                                     "missing": missing, "creator_fixes": [x[0] for x in creator_fixes],
-                                     "applied": apply})
+    if apply:
+        event("action.type.registered", {"action_type": atype, "provider": provider,
+                                         "missing": missing, "creator_fixes": [x[0] for x in creator_fixes],
+                                         "applied": apply})
     return {"exit": 0, "action_type": atype, "provider": provider,
             "declared_types": declared, "missing_types": missing,
             "creator_added": [x[0] for x in creator_fixes],
@@ -554,7 +585,7 @@ def main():
     ap.add_argument("command", choices=list(OPS))
     ap.add_argument("request", nargs="?", default="-")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--apply", action="store_true", help="register: write registry reconcile changes into manifest")
+    ap.add_argument("--apply", action="store_true", help="commit a mutating operation; default is plan only")
     args = ap.parse_args()
     if args.dry_run and args.apply:
         ap.error("--dry-run and --apply are mutually exclusive")
@@ -590,7 +621,9 @@ def main():
     if op not in allowed:
         print("operation " + op + " not allowed for action_type " + atype + " (allowed: " + ",".join(allowed) + ")", file=sys.stderr)
         return 2
-    if op == "create":
+    if op in ("create", "update", "execute") and not args.apply:
+        result = op_plan(op, fm, types)
+    elif op == "create":
         if review != "approved" and status != "approved":
             print("gate: create spec must be approved", file=sys.stderr)
             return 2
@@ -606,7 +639,7 @@ def main():
     if result.get("exit") == 2:
         print(result.get("error", "failed"), file=sys.stderr)
         return 2
-    if args.dry_run:
+    if args.dry_run or (op in ("create", "update", "execute", "register") and not args.apply):
         result = dict(result, dry_run=True)
     print(json.dumps(result, ensure_ascii=False, indent=1))
     return 0

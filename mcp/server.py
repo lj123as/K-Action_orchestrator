@@ -18,7 +18,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Action Operation: what action_ops owns; these write when called (they have no preview step).
+# Action Operation: what action_ops owns. Mutating operations preview by default and require
+# an explicit boolean apply=true to write state.
 OPERATIONS = ("create", "update", "execute", "validate", "register")
 # Registry operation: the descriptor face. Its own set, with preview by default.
 REGISTRY_OPERATIONS = ("catalog", "reconcile")
@@ -28,11 +29,12 @@ VERSION = "0.1.0"
 TOOLS = [
     {"name": "action_request",
      "description": "KA action operation via the K-Action_orchestrator unified entry "
-                    "(create/update/execute/validate/register); a create request must carry "
-                    "action_type and review_status approved",
+                    "(create/update/execute/validate/register); mutating operations preview by "
+                    "default and require apply=true",
      "inputSchema": {"type": "object",
                      "properties": {"operation": {"type": "string"},
-                                    "request": {"type": "string"}},
+                                    "request": {"type": "string"},
+                                    "apply": {"type": "boolean"}},
                      "required": ["operation", "request"]}},
     {"name": "action_update_component",
      "description": "build an update Action Request for action component sync and route it to "
@@ -42,7 +44,8 @@ TOOLS = [
                                     "subject": {"type": "string"},
                                     "instance_id": {"type": "string"},
                                     "spec_id": {"type": "string"},
-                                    "intent": {"type": "string"}},
+                                    "intent": {"type": "string"},
+                                    "apply": {"type": "boolean"}},
                      "required": ["instance_id"]}},
     {"name": "action_registry_catalog",
      "description": "read-only view of the Action Types declared in .knowledge/manifest.yaml "
@@ -51,9 +54,7 @@ TOOLS = [
     {"name": "action_reconcile",
      "description": "create or update an Atomic Action descriptor from an ActionIntent: the "
                     "Registry resolves the Factory, the Factory plans and applies. PREVIEW BY "
-                    "DEFAULT - state is written only when apply is true. The Action Operations "
-                    "(create/update/execute/validate/register) are not preview-gated and must "
-                    "not be described as if they were",
+                    "DEFAULT - state is written only when apply is true",
      "inputSchema": {"type": "object",
                      "properties": {"request": {"type": "string"},
                                     "apply": {"type": "boolean"}},
@@ -61,12 +62,13 @@ TOOLS = [
 ]
 
 
-def run_operation(operation, request):
+def run_operation(operation, request, apply=False):
     """One Action Operation, executed by this component's own tool."""
     if operation not in OPERATIONS:
         return {"exit": 2, "error": "unknown operation: " + str(operation)}
     proc = subprocess.run(
-        [sys.executable, str(ROOT / "tools/action_ops.py"), operation, "-"],
+        [sys.executable, str(ROOT / "tools/action_ops.py"), operation, "-"]
+        + (["--apply"] if apply is True else []),
         input=str(request or ""), capture_output=True, text=True, encoding="utf-8", timeout=120)
     try:
         payload = json.loads((proc.stdout or "").strip())
@@ -111,9 +113,10 @@ def run_registry(operation, request="", apply=False):
 def dispatch(name, args):
     args = args or {}
     if name == "action_request":
-        return run_operation(args.get("operation", ""), args.get("request", ""))
+        return run_operation(args.get("operation", ""), args.get("request", ""),
+                             args.get("apply") is True)
     if name == "action_update_component":
-        return run_operation("update", update_intent(args))
+        return run_operation("update", update_intent(args), args.get("apply") is True)
     if name == "action_registry_catalog":
         return run_registry("catalog")
     if name == "action_reconcile":

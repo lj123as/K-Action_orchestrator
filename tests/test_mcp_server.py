@@ -79,6 +79,53 @@ def test_reconcile_previews_by_default_and_writes_only_on_a_boolean_apply():
     assert state.read_text(encoding="utf-8") == before
 
 
+def run_cli(command, text):
+    """Drive the shared implementation itself (action_ops CLI), not one adapter."""
+    import os
+    proc = subprocess.run(
+        [sys.executable, str(VAULT / "action/K-Action_orchestrator/tools/action_ops.py"),
+         command, "-"],
+        input=text, capture_output=True, text=True, encoding="utf-8", timeout=120,
+        env=dict(os.environ, KA_VAULT_ROOT=str(VAULT), PYTHONIOENCODING="utf-8"),
+    )
+    return proc
+
+
+def test_every_mutating_operation_previews_without_writing():
+    """T7 acceptance 1: a preview leaves every state truth byte-identical.
+
+    create / update / execute / register all mutate on apply, so all four have to be exercised
+    here -- a preview that writes is the failure mode this contract exists to prevent.
+    """
+    state_dir = VAULT / ".knowledge/state"
+    watched = [state_dir / name for name in ("atomic-actions.json", "action-instances.json",
+                                             "action-type-registry.json", "software-realizations.json")]
+    watched.append(VAULT / ".knowledge/manifest.yaml")
+    events = lambda: sorted((VAULT / ".knowledge/events").glob("*.jsonl"))
+    before = {path: path.read_bytes() for path in watched if path.exists()}
+    before_events = {path: path.read_bytes() for path in events()}
+
+    instances = json.loads((state_dir / "action-instances.json").read_text(encoding="utf-8"))
+    first = (instances.get("instances") or [])[0]
+    instance_id, atype = first["instance_id"], first["action_type"]
+    spec = lambda body: chr(10).join(["---", "action_type: " + atype, body, "---"]) + chr(10)
+    requests = {
+        "create": spec("review_status: approved") + "cognition_ref: cognition/ai-workspace/README.md" + chr(10),
+        "update": spec("instance_id: " + instance_id),
+        "execute": spec("instance_id: " + instance_id),
+        "register": spec("instance_id: " + instance_id),
+    }
+
+    for command, text in requests.items():
+        proc = run_cli(command, text)
+        assert proc.returncode == 0, (command, proc.stderr)
+        payload = json.loads(proc.stdout)
+        assert payload.get("dry_run") is True, (command, payload)
+
+    assert {path: path.read_bytes() for path in watched if path.exists()} == before
+    assert {path: path.read_bytes() for path in events()} == before_events
+
+
 def test_an_unknown_operation_is_an_error_result_not_a_crash():
     responses = call({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                       "params": {"name": "action_request",

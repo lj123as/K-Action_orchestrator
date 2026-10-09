@@ -77,7 +77,7 @@ def test_action_update_component_uses_action_request_update(monkeypatch):
         monkeypatch.setenv("KA_VAULT_ROOT", str(vault))
         mcp = load_mcp()
         create_req = "---\naction_type: software\nspec_id: s1\nsubject: knowledge-network\nreview_status: approved\nstatus: approved\n---\n"
-        created = mcp.dispatch("action_request", {"operation": "create", "request": create_req})
+        created = mcp.dispatch("action_request", {"operation": "create", "request": create_req, "apply": True})
         assert created["exit"] == 0, created
 
         # An update names the instance: a subject is not an identity.
@@ -85,9 +85,28 @@ def test_action_update_component_uses_action_request_update(monkeypatch):
         assert anonymous["exit"] == 2
         assert "instance_id is required" in json.dumps(anonymous)
 
-        updated = mcp.dispatch("action_update_component", {"action_type": "software", "instance_id": created["instance"]["instance_id"], "intent": "sync with KN cognition"})
+        updated = mcp.dispatch("action_update_component", {"action_type": "software", "instance_id": created["instance"]["instance_id"], "intent": "sync with KN cognition", "apply": True})
         assert updated["exit"] == 0, updated
         assert updated["status"] == "updated"
+
+
+def test_mutating_action_request_previews_without_factory_or_state_write(monkeypatch):
+    with tempfile.TemporaryDirectory() as td:
+        vault = Path(td)
+        make_chain_vault(vault)
+        monkeypatch.setenv("KA_VAULT_ROOT", str(vault))
+        mcp = load_mcp()
+        request = "---\naction_type: software\nspec_id: s1\nsubject: preview\nreview_status: approved\n---\n"
+        result = mcp.dispatch("action_request", {"operation": "create", "request": request})
+        assert result["exit"] == 0, result
+        assert result["status"] == "planned"
+        assert result["dry_run"] is True
+        assert not (vault / ".knowledge/state/action-instances.json").exists()
+
+        quoted = mcp.dispatch("action_request", {"operation": "create", "request": request,
+                                                  "apply": "true"})
+        assert quoted["status"] == "planned"
+        assert not (vault / ".knowledge/state/action-instances.json").exists()
 
 
 def test_action_request_create_gate_and_unknown_op(monkeypatch):
@@ -106,4 +125,3 @@ def test_action_request_create_gate_and_unknown_op(monkeypatch):
         bad = mcp.dispatch("action_request", {"operation": "explode", "request": req})
         assert bad["exit"] == 2
         assert "unknown operation" in bad.get("error", "")
-
